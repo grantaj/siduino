@@ -34,10 +34,15 @@ volatile boolean awakenByInterrupt = false;
 // Pins connected to 74LS244 chip select decoder
 int G1 = 13;
 
-// LSHC595 Shift Register to load address bus
-int addr_DATA  = A1;
-int addr_CLK   = A2;
-int addr_LATCH = A3;
+// 74HC595 Shift Register to load address bus
+int addr_DATA  = 4; // WHITE wire
+int addr_CLK   = 5; // YELLOW
+int addr_LATCH = 6; // RED
+
+// 74HC595 Shift Register to load data bus
+int data_DATA  = 7; // ORANGE wire
+int data_CLK   = 8; // YELLOW
+int data_LATCH = 9; // RED
 
 
 // Analog bus for reading pots
@@ -76,6 +81,10 @@ void setup() {
   pinMode(addr_CLK, OUTPUT);
   digitalWrite(addr_LATCH, LOW);
   pinMode(addr_LATCH, OUTPUT);
+  pinMode(data_DATA, OUTPUT);
+  pinMode(data_CLK, OUTPUT);
+  digitalWrite(data_LATCH, LOW);
+  pinMode(data_LATCH, OUTPUT);
 
   // Start data bus in write mode
   for (int i = 0; i < 8; i++) {
@@ -135,10 +144,9 @@ void setup() {
 */
 
 void data_write(byte d) {
-  for (int i = 0; i <= 7; i++) {
-    digitalWrite(data[i], d & 1);
-    d >>= 1;
-  }
+  digitalWrite(data_LATCH, LOW);
+  shiftOut(data_DATA, data_CLK, MSBFIRST, d);
+  digitalWrite(data_LATCH, HIGH);
 }
 
 /*
