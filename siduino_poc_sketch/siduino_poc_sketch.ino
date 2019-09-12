@@ -74,6 +74,22 @@ const int SID_CTRL    = 0x04;
 const int SID_AD      = 0x05;
 const int SID_SR      = 0x06;
 
+// MIDI
+byte commandByte;
+byte noteByte;
+byte velocityByte;
+
+bool waitForMIDI = true;
+
+int noteFreq[95] = {0x0112, 0x0123, 0x0134, 0x0146, 0x015a, 0x016e, 0x0184, 0x018b, 0x01b3, 0x01cd, 0x01e9, 0x0206,
+                    0x0225, 0x0245, 0x0268, 0x028c, 0x02b3, 0x02dc, 0x0308, 0x0336, 0x0367, 0x039b, 0x03d2, 0x040c,
+                    0x0449, 0x048b, 0x04d0, 0x0519, 0x0567, 0x05b9, 0x0610, 0x066c, 0x06ce, 0x0735, 0x07a3, 0x0817,
+                    0x0893, 0x0915, 0x099f, 0x0a32, 0x0acd, 0x0b72, 0x0c20, 0x0c08, 0x0d9c, 0x0e6b, 0x0f46, 0x102f,
+                    0x1125, 0x122a, 0x133f, 0x1464, 0x159a, 0x16e3, 0x183f, 0x1981, 0x1b38, 0x1cd6, 0x1e80, 0x205e,
+                    0x224b, 0x2455, 0x267e, 0x28c8, 0x2b34, 0x2dc6, 0x307f, 0x3361, 0x366f, 0x39ac, 0x3d1a, 0x40bc,
+                    0x4495, 0x48a9, 0x4cfc, 0x518f, 0x5669, 0x5b8c, 0x60fe, 0x6602, 0x6cdf, 0x7358, 0x7a34, 0x8178,
+                    0x892b, 0x9153, 0x99f7, 0xa31f, 0xacd2, 0xb719, 0xc1fc, 0xcd85, 0xd98d, 0xe6b0, 0xf467};
+
 void setup() {
   digitalWrite(G1, LOW);
   pinMode(G1, OUTPUT);
@@ -92,7 +108,7 @@ void setup() {
   }
 
   // Initialise serial
-  Serial.begin(9600);
+  Serial.begin(31250);
 
   // Setup clouck output pin to drive SID chip
   pinMode(clkOutputPin, OUTPUT);
@@ -129,6 +145,10 @@ void setup() {
   }
 
   attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
+
+  poke(SID_VOICE_1 + SID_CTRL, 0b00000000);
+  poke(SID_FILTER + 0x03, 0x0f); // max volume & voice 3 off
+
 }
 
 /*
@@ -228,24 +248,54 @@ void loop() {
     Serial.println();
   */
 
+
   int chord[3] = {0x1125, 0x159a, 0x1981};
 
-  poke(SID_FILTER + 0x03, 0x0f); // max volume & voice 3 off
+  //poke(SID_FILTER + 0x03, 0x0f); // max volume & voice 3 off
 
-  // Make a noise
-  for (int i = 0; i < 3; i++) {
-    Serial.println("Writing to SID...BEEP");
+  while (waitForMIDI) {
+    if (Serial.available() == 3) {
+      commandByte = Serial.read();
+      noteByte = Serial.read();
+      velocityByte = Serial.read();
+      waitForMIDI = false;
+    }
+  }
 
-    poke(SID_VOICE_1 + SID_FREQ_LO, lowByte(chord[i]));
-    poke(SID_VOICE_1 + SID_FREQ_HI, highByte(chord[i]));
+  if (commandByte == 0x90) {
+    poke(SID_VOICE_1 + SID_FREQ_LO, lowByte(noteFreq[noteByte]));
+    poke(SID_VOICE_1 + SID_FREQ_HI, highByte(noteFreq[noteByte]));
     poke(SID_VOICE_1 + SID_AD, 0x0f);
     poke(SID_VOICE_1 + SID_SR, 0xf0);
     poke(SID_VOICE_1 + SID_CTRL, 0b00100001);
-    Serial.println("complete");
-    delay(1000);
-    Serial.println("Writing to SID...OFF");
+  } else if (commandByte = 0x80) {
     poke(SID_VOICE_1 + SID_CTRL, 0b00000000);
-    Serial.println("complete");
-    delay(500);
   }
+
+  waitForMIDI = true;
+
+
+  /*
+     int chord[3] = {0x1125, 0x159a, 0x1981};
+
+     poke(SID_FILTER + 0x03, 0x0f); // max volume & voice 3 off
+
+     // Make a noise
+     for (int i = 0; i < 3; i++) {
+       Serial.println("Writing to SID...BEEP");
+
+       poke(SID_VOICE_1 + SID_FREQ_LO, lowByte(chord[i]));
+       poke(SID_VOICE_1 + SID_FREQ_HI, highByte(chord[i]));
+       poke(SID_VOICE_1 + SID_AD, 0x0f);
+       poke(SID_VOICE_1 + SID_SR, 0xf0);
+       poke(SID_VOICE_1 + SID_CTRL, 0b00100001);
+       Serial.println("complete");
+       delay(1000);
+       Serial.println("Writing to SID...OFF");
+       poke(SID_VOICE_1 + SID_CTRL, 0b00000000);
+       Serial.println("complete");
+       delay(500);
+
+     }
+  */
 }
