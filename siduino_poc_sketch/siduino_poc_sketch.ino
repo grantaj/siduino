@@ -1,8 +1,14 @@
 #include "Wire.h"
 #include <Adafruit_MCP23017.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // MCP setup
 Adafruit_MCP23017 mcp;
+
+// OLED Setup
+#define OLED_RESET 4
+Adafruit_SSD1306 display(OLED_RESET);
 
 // Interrupts from the MCP will be handled by this PIN
 byte arduinoIntPin = 2;
@@ -96,6 +102,17 @@ const int noteFreq[95] = {
 };
 
 void setup() {
+  // Initialise screen
+  // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // initialize with the I2C addr 0x3D (for the 128x64)
+  display.display();
+  delay(1000);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.display();
+
+  // I/O setup
   digitalWrite(G1, LOW);
   pinMode(G1, OUTPUT);
   pinMode(addr_DATA, OUTPUT);
@@ -279,6 +296,15 @@ void loop() {
       commandByte = Serial.read();
       noteByte = Serial.read();
       velocityByte = Serial.read();
+
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.print(commandByte, HEX);  display.print(" ");
+      display.print(noteByte, HEX);     display.print(" ");
+      display.print(velocityByte, HEX); 
+      display.display();
+
+
       waitForMIDI = false;
     }
   }
