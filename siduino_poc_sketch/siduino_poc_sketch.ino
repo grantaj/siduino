@@ -292,21 +292,35 @@ void loop() {
 
 
   while (waitForMIDI) {
-    if (Serial.available() == 3) {
-      commandByte = Serial.read();
-      noteByte = Serial.read();
+    int midiBytes = Serial.available();
+
+    if (midiBytes > 2) { // At least 3 bytes available
+      // Read the next 3 bytes
+      commandByte  = Serial.read();
+      noteByte     = Serial.read();
       velocityByte = Serial.read();
 
       display.clearDisplay();
       display.setCursor(0, 0);
       display.print(commandByte, HEX);  display.print(" ");
       display.print(noteByte, HEX);     display.print(" ");
-      display.print(velocityByte, HEX); 
+      display.print(velocityByte, HEX);
       display.display();
 
-
       waitForMIDI = false;
-    }
+    } /*else if (midiBytes > 0) {
+      // Flush out unknown MIDI
+      for (int i = 0; i < midiBytes; i++)  {
+        Serial.read();
+      }
+
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.print("Weird MIDI: ");
+      display.print(midiBytes);  display.println(" bytes");
+      display.display();
+
+    }*/
   }
 
   if (commandByte == 0x90) {
