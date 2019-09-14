@@ -110,6 +110,7 @@ void setup() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(WHITE);
+  display.println("Siduino");
   display.display();
 
   // I/O setup
@@ -168,29 +169,16 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
 
-  poke(SID_VOICE_1 + SID_CTRL, 0b00000000);
-  poke(SID_VOICE_1 + SID_AD, 0x0f);
-  poke(SID_VOICE_1 + SID_SR, 0xf0);
-
-  poke(SID_VOICE_2 + SID_CTRL, 0b00000000);
-  poke(SID_VOICE_3 + SID_CTRL, 0b00000000);
-
-  poke(SID_FILTER + 0x02, 0x00); // no filtering
-  poke(SID_FILTER + 0x03, 0x08); // max volume & voice 3 off
+  // Set up iitial SID voices
+  sidInit();
+ 
+  setADSR(SID_VOICE_1, 0x0, 0xf, 0xf, 0x0); 
+  setFC(0b11111111111);
+  poke(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
+  poke(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
 
 }
 
-/*
-  byte data_read() {
-  byte d = 0;
-
-  for (int i = 7; i >= 0; i--) {
-    d <<= 1;
-    d |= digitalRead(data[i]);
-  }
-  return d;
-  }
-*/
 
 void data_write(byte d) {
   digitalWrite(data_LATCH, LOW);
@@ -251,6 +239,12 @@ void poke(int reg, int value) {
   digitalWrite(G1, LOW);
 }
 
+void sidInit() {
+  for (int i=0; i<24; i++) {
+    poke(SID_BASE+i, 0x00);
+  }
+}
+
 void noteOn(int v, int f) {
   poke(v + SID_FREQ_LO, lowByte(f));
   poke(v + SID_FREQ_HI, highByte(f));
@@ -260,6 +254,34 @@ void noteOn(int v, int f) {
 void noteOff(int v) {
   poke(v + SID_CTRL, 0b00000000);
 }
+
+void setADSR(int v, byte a, byte d, byte s, byte r) {
+  a &= 0b1111; 
+  d &= 0b1111;
+  s &= 0b1111; 
+  r &= 0b1111;
+     
+  poke(v + SID_AD, (a<<4)|d);
+  poke(v + SID_SR, (r<<4)|r);
+}
+
+int readPot(int i) {
+  byte base = 0x40; // 0b0100 0000
+  address_write(base + i);
+  digitalWrite(G1, HIGH);
+  int pot = analogRead(A0);
+  delayMicroseconds(10);
+  digitalWrite(G1, LOW);
+  return pot;
+}
+
+void setFC(int FC) {
+  poke(SID_FILTER + 0x00, FC & 0b111);
+  FC >>= 3;
+  poke(SID_FILTER + 0x01, FC);
+}
+
+int cutoffFreq = 2 * readPot(0);
 
 void loop() {
 
@@ -288,39 +310,44 @@ void loop() {
   */
 
 
-
-
-
   while (waitForMIDI) {
+
+
+    int p = 2 * readPot(0); // 0 to 2048
+    p = p > 2047 ? 2047 : p;
+
+    if (p != cutoffFreq) {
+      cutoffFreq = p;
+      setFC(cutoffFreq);
+      /*
+            display.clearDisplay();
+            display.setCursor(0, 0);
+            display.println(cutoffFreq);
+            display.display();
+      */
+    }
+
+
+
+
     int midiBytes = Serial.available();
+
 
     if (midiBytes > 2) { // At least 3 bytes available
       // Read the next 3 bytes
       commandByte  = Serial.read();
       noteByte     = Serial.read();
       velocityByte = Serial.read();
-
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.print(commandByte, HEX);  display.print(" ");
-      display.print(noteByte, HEX);     display.print(" ");
-      display.print(velocityByte, HEX);
-      display.display();
-
-      waitForMIDI = false;
-    } /*else if (midiBytes > 0) {
-      // Flush out unknown MIDI
-      for (int i = 0; i < midiBytes; i++)  {
-        Serial.read();
-      }
-
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.print("Weird MIDI: ");
-      display.print(midiBytes);  display.println(" bytes");
-      display.display();
-
-    }*/
+      /*
+            display.clearDisplay();
+            display.setCursor(0, 0);
+            display.print(commandByte, HEX);  display.print(" ");
+            display.print(noteByte, HEX);     display.print(" ");
+            display.print(velocityByte, HEX);
+            display.display();
+      */
+      waitForMIDI = false;  // Ready to do a note on or off
+    }
   }
 
   if (commandByte == 0x90) {
