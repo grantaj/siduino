@@ -17,11 +17,13 @@ byte arduinoIntPin = 2;
 //byte arduinoInterrupt = 1;
 
 
-volatile boolean awakenByInterrupt = false;
-
+volatile boolean awakenByInterrupt = false; // Pin state change on MCP
+volatile boolean periodicInterrupt = false; // Timer interrupt for periodic polling
+volatile int periodicInterruptCount = 0; // Counts how many interrupts have occured
 
 // Pins connected to 74LS244 chip select decoder
-const int G1 = 13;
+const int G1  = 13;
+const int LED = 12;
 
 // 74HC595 Shift Register to load address bus
 const int addr_DATA  = 4; // WHITE wire
@@ -47,12 +49,14 @@ const int clkOutputPin = 11;   // Digital pin 11 = MOSI/OC2A/PCINT3) for ATmega3
 const int ocr2aval  = 7; // Set to 7 for 1MHz, 3 for 2MHz
 
 // Location of SID in memory map
-const int SID_BASE = 0x0000;
-const int SID_VOICE_1 = SID_BASE + 0x00;
-const int SID_VOICE_2 = SID_BASE + 0x07;
-const int SID_VOICE_3 = SID_BASE + 0x0e;
-const int SID_FILTER  = SID_BASE + 0x15;
-const int SID_MISC    = SID_BASE + 0x19;
+const int SID_BASE    = 0x0000;
+
+// Offsets to the SID registers
+const int SID_VOICE_1 = 0x00;
+const int SID_VOICE_2 = 0x07;
+const int SID_VOICE_3 = 0x0e;
+const int SID_FILTER  = 0x15;
+const int SID_MISC    = 0x19;
 
 // The following are per-voice offsets from SID_VOICE_x
 const int SID_FREQ_LO = 0x00;
@@ -62,6 +66,10 @@ const int SID_PW_HI   = 0x03; // Bottom 4 bits only
 const int SID_CTRL    = 0x04;
 const int SID_AD      = 0x05;
 const int SID_SR      = 0x06;
+
+// In memory copies of the SID registers
+// We need these, as the SID write registers are write only
+byte SID_register[25];
 
 // MIDI
 byte commandByte;
@@ -126,7 +134,7 @@ void setup() {
   TCCR1A = 0;
   TCCR1B = 0;
   TCNT1  = 0;
-  OCR1A = 31250;            // compare match register 16MHz/256/2Hz
+  OCR1A  = 1250;            // compare match register 1 sec = 16MHz/256 = 62,500 Hz
   TCCR1B |= (1 << WGM12);   // CTC mode
   TCCR1B |= (1 << CS12);    // 256 prescaler
   TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
@@ -173,24 +181,65 @@ void setup() {
 
   // Set up iitial SID voices
   sidInit();
+  
+  sidRegisterWrite(SID_VOICE_1 + SID_CTRL, 0b0100000); // Initialise to PW
+  
+  sidRegisterWrite(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
+  sidRegisterWrite(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
 
-  setADSR(SID_VOICE_1, 0x0, 0xf, 0xf, 0x0);
-  setFC(0b11111111111);
-  poke(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
-  poke(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
-
+  updateFilterParams();
+  updateVoiceParams();
+  statusDisplay();
 }
 
-ISR(TIMER1_COMPA_vect)
+ISR(TIMER1_COMPA_vect) {
+  digitalWrite(LED, digitalRead(LED) ^ 1);   // toggle LED pin
+  periodicInterrupt = true;
+}
 
+void handlePeriodicInterrupt() {
+
+  periodicInterruptCount++;
+  updateFilterParams();
+  updateVoiceParams();
+
+  if (!(periodicInterruptCount % 50)) {
+    //statusDisplay();
+  }
+
+  periodicInterrupt = false;
+}
+
+void updateFilterParams()
 {
-  digitalWrite(12, digitalRead(12) ^ 1);   // toggle LED pin
-  awakenByInterrupt = true;
-  //noInterrupts();
-  //display.println("IRQ");
-  //display.display();
-  //interrupts();
+  // ADC is 10 bits
+  setFC(readPot(0) << 1);  // Cutoff frequency is 11 bits
+  setRES(readPot(1) >> 6); // Resonance is 4 bits
+  setVOL(readPot(2) >> 6); // Volume is 4 bits
+}
 
+void updateVoiceParams() {
+  // No voice parameter for now, as we are working only with voice 1
+  // Each ADSR parameter is 4 bits
+  setADSR(SID_VOICE_1, readPot(4) >> 6, readPot(5) >> 6, readPot(6) >> 6, readPot(7) >> 6);
+  // PW is 12 bits
+  setPW(SID_VOICE_1, readPot(3) << 2);
+}
+
+void statusDisplay() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  // Display cutoff freq as one binary string high byte and low 3 bits
+  //display.print(sidRegisterRead(SID_FILTER + 0x01), BIN); display.println(sidRegisterRead(SID_FILTER + 0x00), BIN);
+
+  //display.println(sidRegisterRead(SID_FILTER + 0x02), BIN);
+  //display.println(sidRegisterRead(SID_FILTER + 0x03), BIN);
+
+  display.println(sidRegisterRead(SID_VOICE_1 + SID_AD), HEX);
+  display.println(sidRegisterRead(SID_VOICE_1 + SID_SR), HEX);
+
+  display.display();
 }
 
 void data_write(byte d) {
@@ -239,6 +288,10 @@ void cleanInterrupts() {
   awakenByInterrupt = false;
 }
 
+/*
+   Generic poke function to write value on to the data bus
+   and reg obnto the address bus.
+*/
 void poke(int reg, int value) {
   digitalWrite(G1, LOW);
   //Serial.println("writing address");
@@ -252,30 +305,56 @@ void poke(int reg, int value) {
   digitalWrite(G1, LOW);
 }
 
+// SID chip functions -------------------------------
+
+// Use sidWriteRegister and sidReadRegister to access
+// SID chip registers. This keeps local copy of the
+// registers up to date. Direct poking will cause the
+// local copy to get out of date so don't do it.
+// The registers are indexed from 0x00, i.e. the bottom
+// of the SID chip memory map.
+
+byte sidRegisterRead(int r) {
+  return SID_register[r];
+}
+
+void sidRegisterWrite(int r, byte b) {
+  SID_register[r] = b;
+  poke(SID_BASE + r, b); // This is the only place that SID_BASE should be used.
+
+}
+
 void sidInit() {
   for (int i = 0; i < 24; i++) {
-    poke(SID_BASE + i, 0x00);
+    sidRegisterWrite(i, 0x00);
   }
 }
 
 void noteOn(int v, int f) {
-  poke(v + SID_FREQ_LO, lowByte(f));
-  poke(v + SID_FREQ_HI, highByte(f));
-  poke(v + SID_CTRL, 0b00100001);
+  sidRegisterWrite(v + SID_FREQ_LO, lowByte(f));
+  sidRegisterWrite(v + SID_FREQ_HI, highByte(f));
+  byte ctrl = sidRegisterRead(v + SID_CTRL);
+  sidRegisterWrite(v + SID_CTRL, ctrl | 0b00000001);
 }
 
 void noteOff(int v) {
-  poke(v + SID_CTRL, 0b00000000);
+  byte ctrl = sidRegisterRead(v + SID_CTRL);
+  sidRegisterWrite(v + SID_CTRL, ctrl & 0b11111110);
 }
 
 void setADSR(int v, byte a, byte d, byte s, byte r) {
-  a &= 0b1111;
-  d &= 0b1111;
-  s &= 0b1111;
-  r &= 0b1111;
+  a &= 0xf;
+  d &= 0xf;
+  s &= 0xf;
+  r &= 0xf;
 
-  poke(v + SID_AD, (a << 4) | d);
-  poke(v + SID_SR, (r << 4) | r);
+  sidRegisterWrite(v + SID_AD, (a << 4) | d);
+  sidRegisterWrite(v + SID_SR, (s << 4) | r);
+}
+
+void setPW(int v, int pw) {
+  sidRegisterWrite(v + SID_PW_LO, pw & 0xfff);
+  sidRegisterWrite(v + SID_PW_HI, (pw >> 8) & 0xf);
 }
 
 int readPot(int i) {
@@ -289,73 +368,39 @@ int readPot(int i) {
 }
 
 void setFC(int FC) {
-  poke(SID_FILTER + 0x00, FC & 0b111);
-  FC >>= 3;
-  poke(SID_FILTER + 0x01, FC);
+  sidRegisterWrite(SID_FILTER + 0x00, FC & 0b111);
+  sidRegisterWrite(SID_FILTER + 0x01, FC >> 3);
 }
 
-int cutoffFreq = 2 * readPot(0);
+void setRES(int RES) {
+  RES = RES & 0b1111;
+  byte r = sidRegisterRead(SID_FILTER + 0x02);
+  sidRegisterWrite(SID_FILTER + 0x02, (RES << 4) | (r & 0b1111));
+}
 
-int count = 0;
+void setVOL(int VOL) {
+  byte r = sidRegisterRead(SID_FILTER + 0x03);
+  sidRegisterWrite(SID_FILTER + 0x03, (r & 0b11110000) | (VOL & 0b1111));
+}
 
 void loop() {
 
-  /*
-    // 4051 analog multiplexer device 2 on chip select circuit
-    byte base = 0x40; // 0b0100 0000
-    for (byte i = 0; i < 8; i++) {
-      address_write(base + i);
-      digitalWrite(G1, HIGH);
-      int pot = analogRead(A0);
-      digitalWrite(G1, LOW);
-      Serial.println(pot);
-      delay(50);
+  while (waitForMIDI) {
+
+    if (periodicInterrupt) {
+      //noInterrupts();
+      handlePeriodicInterrupt();
+      //interrupts();
     }
 
+/*
     if (awakenByInterrupt) {
       detachInterrupt(digitalPinToInterrupt(arduinoIntPin));
-      Serial.println("IRQ!");
+      display.println("IRQ!");
       handleInterrupt();
       attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
     }
-
-    Serial.println();
-    Serial.println(MCP23017_GPIOAB_data, HEX);
-    Serial.println();
-  */
-
-  while (waitForMIDI) {
-
-
-    int p = 2 * readPot(0); // 0 to 2048
-    p = p > 2047 ? 2047 : p;
-
-    if (p != cutoffFreq) {
-      cutoffFreq = p;
-      setFC(cutoffFreq);
-      /*
-            display.clearDisplay();
-            display.setCursor(0, 0);
-            display.println(cutoffFreq);
-            display.display();
-      */
-
-  if (awakenByInterrupt) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 0);
-    display.println(count++);
-    display.display();
-    
-    awakenByInterrupt=false;
-  }
-  
-    }
-
-
-
-
+*/
     int midiBytes = Serial.available();
 
 
