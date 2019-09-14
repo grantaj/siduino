@@ -126,7 +126,7 @@ void setup() {
   // Initialise serial
   Serial.begin(31250);
   // Flush MIDI
-  while(Serial.available()) {
+  while (Serial.available()) {
     Serial.read();
   }
 
@@ -420,42 +420,12 @@ void setVOL(int VOL) {
   sidRegisterWrite(SID_FILTER + 0x03, (r & 0b11110000) | (VOL & 0b1111));
 }
 
-void loop() {
-
-  while (waitForMIDI) {
-
-    if (periodicInterrupt) {
-      handlePeriodicInterrupt();
-    }
-
-    /*
-        if (awakenByInterrupt) {
-          detachInterrupt(digitalPinToInterrupt(arduinoIntPin));
-          display.println("IRQ!");
-          handleInterrupt();
-          attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
-        }
-    */
-    int midiBytes = Serial.available();
-
-
-    if (midiBytes > 2) { // At least 3 bytes available
-      // Read the next 3 bytes
-      commandByte  = Serial.read();
-      noteByte     = Serial.read();
-      velocityByte = Serial.read();
-      /*
-            display.clearDisplay();
-            display.setCursor(0, 0);
-            display.print(commandByte, HEX);  display.print(" ");
-            display.print(noteByte, HEX);     display.print(" ");
-            display.print(velocityByte, HEX);
-            display.display();
-      */
-      waitForMIDI = false;  // Ready to do a note on or off
-    }
-  }
-
+void handleNoteEvent() {
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.print("MIDI: ");display.println(commandByte,HEX);
+    display.display();
+    
   if (commandByte == 0x90) {
     oldNoteByte = currentNoteByte; // push old note onto stack
     currentNoteByte = noteByte; // This is the new note
@@ -473,8 +443,23 @@ void loop() {
       noteOff(SID_VOICE_1);
 
     }
+  } else {
+
+  }
+}
+
+void loop() {
+  if (periodicInterrupt) {
+    //handlePeriodicInterrupt();
   }
 
-  waitForMIDI = true;
+  if (Serial.available() > 2) { // At least 3 bytes available
+    // Read the next 3 bytes
+    commandByte  = Serial.read();
+    noteByte     = Serial.read();
+    velocityByte = Serial.read();
+    handleNoteEvent();
+
+  }
 
 }
