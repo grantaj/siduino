@@ -11,13 +11,13 @@ Adafruit_MCP23017 mcp;
 Adafruit_SSD1306 display(OLED_RESET);
 
 // Interrupts from the MCP will be handled by this PIN
-byte arduinoIntPin = 2;
+//byte arduinoIntPin = 2;
 
 // ... and this interrupt vector
 //byte arduinoInterrupt = 1;
 
 
-volatile boolean awakenByInterrupt = false; // Pin state change on MCP
+//volatile boolean awakenByInterrupt = false; // Pin state change on MCP
 volatile boolean periodicInterrupt = false; // Timer interrupt for periodic polling
 volatile int periodicInterruptCount = 0; // Counts how many interrupts have occured
 
@@ -42,7 +42,7 @@ const int ANALOG_BUS = A0;
 // Data bus
 const int data[8] = {3, 4, 5, 6, 7, 8, 9, 10};
 
-unsigned int MCP23017_GPIOAB_data = 0xffff;
+unsigned int MCP23017_GPIOAB_data = 0x0000;
 
 // Pin for 1MHz clock to 6581
 const int clkOutputPin = 11;   // Digital pin 11 = MOSI/OC2A/PCINT3) for ATmega328 boards
@@ -93,6 +93,7 @@ const int noteFreq[95] = {
 };
 
 void setup() {
+  // ----------------------------------------------------------------------
   // Initialise screen
   // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // initialize with the I2C addr 0x3D (for the 128x64)
@@ -104,6 +105,7 @@ void setup() {
   display.println("Siduino");
   display.display();
 
+  // ----------------------------------------------------------------------
   // I/O setup
   digitalWrite(G1, LOW);
   pinMode(G1, OUTPUT);
@@ -123,8 +125,12 @@ void setup() {
 
   // Initialise serial
   Serial.begin(31250);
+  // Flush MIDI
+  while(Serial.available()) {
+    Serial.read();
+  }
 
-  // Setup clouck output pin to drive SID chip
+  // Setup clock output pin to drive SID chip
   pinMode(clkOutputPin, OUTPUT);
 
   // ----------------------------------------------------------------------
@@ -163,48 +169,60 @@ void setup() {
   // This value determines the output frequency
   OCR2A = ocr2aval;
 
-  pinMode(arduinoIntPin, INPUT);
 
-  /*
-    mcp.begin();
-    mcp.setupInterrupts(true, false, LOW);
+  // ----------------------------------------------------------------------
+  // MCP23017 setup
+  // This will be used to control the SID_CTRL registers
+  //pinMode(arduinoIntPin, INPUT);
 
+  mcp.begin();
+  //mcp.setupInterrupts(true, false, LOW);
 
-    for (int i = 0; i < 16; i++) {
-      mcp.pinMode(i, INPUT);
-      mcp.pullUp(i, HIGH);  // turn on a 100K pullup internally
-      mcp.setupInterruptPin(i, CHANGE);
-    }
+  for (int i = 0; i < 16; i++) {
+    mcp.pinMode(i, INPUT);
+    mcp.pullUp(i, HIGH);  // turn on a 100K pullup internally
+    //mcp.setupInterruptPin(i, CHANGE);
+  }
 
-    attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
-  */
+  //MCP23017_GPIOAB_data = mcp.readGPIOAB();
 
+  //attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
+
+  // ----------------------------------------------------------------------
   // Set up iitial SID voices
   sidInit();
-  
-  sidRegisterWrite(SID_VOICE_1 + SID_CTRL, 0b0100000); // Initialise to PW
-  
+
+  //sidRegisterWrite(SID_VOICE_1 + SID_CTRL, 0b01000000); // Initialise to PW
+  updateCtrlParams();
+
+  // These should be switched
   sidRegisterWrite(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
   sidRegisterWrite(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
 
   updateFilterParams();
   updateVoiceParams();
+
+  noteOff(SID_VOICE_1); //just in case something is wierd
+
   statusDisplay();
 }
 
 ISR(TIMER1_COMPA_vect) {
-  digitalWrite(LED, digitalRead(LED) ^ 1);   // toggle LED pin
+  //digitalWrite(LED, digitalRead(LED) ^ 1);   // toggle LED pin
   periodicInterrupt = true;
 }
 
 void handlePeriodicInterrupt() {
 
   periodicInterruptCount++;
+  // Fast updates
   updateFilterParams();
-  updateVoiceParams();
 
-  if (!(periodicInterruptCount % 50)) {
-    //statusDisplay();
+  // Slower updates
+  // probably not altering these so much in real time
+  if (!(periodicInterruptCount % 20)) {
+    updateVoiceParams();
+    updateCtrlParams();
   }
 
   periodicInterrupt = false;
@@ -226,6 +244,14 @@ void updateVoiceParams() {
   setPW(SID_VOICE_1, readPot(3) << 2);
 }
 
+void updateCtrlParams() {
+  // Don't mess with GATE
+  int c = mcp.readGPIOAB();
+  byte gate = sidRegisterRead(SID_VOICE_1 + SID_CTRL) & 1;
+  setCTRL(SID_VOICE_1, (c & 0b11111110) | gate);
+}
+
+
 void statusDisplay() {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -238,7 +264,7 @@ void statusDisplay() {
 
   display.println(sidRegisterRead(SID_VOICE_1 + SID_AD), HEX);
   display.println(sidRegisterRead(SID_VOICE_1 + SID_SR), HEX);
-
+  display.println(sidRegisterRead(SID_VOICE_1 + SID_CTRL), BIN);
   display.display();
 }
 
@@ -259,35 +285,40 @@ void address_write(byte a) {
 }
 
 
-
-// The int handler will just signal that the int has happen
-// we will do the work from the main loop.
-void intCallBack() {
+/*
+  // The int handler will just signal that the int has happen
+  // we will do the work from the main loop.
+  void intCallBack() {
   awakenByInterrupt = true;
-}
+  }
 
-void handleInterrupt() {
+
+  void handleInterrupt() {
 
   // Get more information from the MCP from the INT
-  uint8_t pin = mcp.getLastInterruptPin();
-  uint8_t val = mcp.getLastInterruptPinValue();
+  //uint8_t pin = mcp.getLastInterruptPin();
+  //uint8_t val = mcp.getLastInterruptPinValue();
 
-  Serial.print("The change was ");
-  Serial.print("Pin: "); Serial.print(pin, HEX); Serial.println();
-  Serial.print("Val: "); Serial.print(val, HEX); Serial.println();
+  //Serial.print("The change was ");
+  //Serial.print("Pin: "); Serial.print(pin, HEX); Serial.println();
+  //Serial.print("Val: "); Serial.print(val, HEX); Serial.println();
 
+  //irqcount++;
   MCP23017_GPIOAB_data = mcp.readGPIOAB();
+  //updateCtrlParams();
 
-  cleanInterrupts();
-}
+  //statusDisplay();
 
-// handy for interrupts triggered by buttons
-// normally signal a few due to bouncing issues
-void cleanInterrupts() {
+  //cleanInterrupts();
+  }
+
+  // handy for interrupts triggered by buttons
+  // normally signal a few due to bouncing issues
+  void cleanInterrupts() {
   EIFR = 0x01;
   awakenByInterrupt = false;
-}
-
+  }
+*/
 /*
    Generic poke function to write value on to the data bus
    and reg obnto the address bus.
@@ -342,6 +373,12 @@ void noteOff(int v) {
   sidRegisterWrite(v + SID_CTRL, ctrl & 0b11111110);
 }
 
+void setCTRL(int v, byte c) {
+  // Note will also change status of GATE
+  // Caller needs to manage GATE
+  sidRegisterWrite(v + SID_CTRL, c);
+}
+
 void setADSR(int v, byte a, byte d, byte s, byte r) {
   a &= 0xf;
   d &= 0xf;
@@ -388,19 +425,17 @@ void loop() {
   while (waitForMIDI) {
 
     if (periodicInterrupt) {
-      //noInterrupts();
       handlePeriodicInterrupt();
-      //interrupts();
     }
 
-/*
-    if (awakenByInterrupt) {
-      detachInterrupt(digitalPinToInterrupt(arduinoIntPin));
-      display.println("IRQ!");
-      handleInterrupt();
-      attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
-    }
-*/
+    /*
+        if (awakenByInterrupt) {
+          detachInterrupt(digitalPinToInterrupt(arduinoIntPin));
+          display.println("IRQ!");
+          handleInterrupt();
+          attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
+        }
+    */
     int midiBytes = Serial.available();
 
 
