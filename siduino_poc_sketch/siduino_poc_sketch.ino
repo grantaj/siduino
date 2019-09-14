@@ -16,27 +16,10 @@ byte arduinoIntPin = 2;
 // ... and this interrupt vector
 //byte arduinoInterrupt = 1;
 
+
 volatile boolean awakenByInterrupt = false;
 
-/*
-    Test the 74LS244 3 bit to 8 line binary decoder
-    Assumes G2A and G2B lines are hard wired LOW
 
-    G1 LOW  = All Yi HIGH
-    G1 HIGH = Yi according to table below
-      ---------
-      C B A   i - Yi goes LOW, all others stay HIGH
-      ---------
-      0 0 0 | 0
-      0 0 1 | 1
-      0 1 0 | 2
-      0 1 1 | 3
-      1 0 0 | 4
-      1 0 1 | 5
-      1 1 0 | 6
-      1 1 1 | 7
-      ---------
-*/
 // Pins connected to 74LS244 chip select decoder
 const int G1 = 13;
 
@@ -135,7 +118,24 @@ void setup() {
 
   // Setup clouck output pin to drive SID chip
   pinMode(clkOutputPin, OUTPUT);
-  // Set Timer 2 CTC mode with no prescaling.  OC2A toggles on compare match
+
+  // ----------------------------------------------------------------------
+  // TIMER1 for polling analog input surface
+
+  noInterrupts();           // disable all interrupts
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1  = 0;
+  OCR1A = 31250;            // compare match register 16MHz/256/2Hz
+  TCCR1B |= (1 << WGM12);   // CTC mode
+  TCCR1B |= (1 << CS12);    // 256 prescaler
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+  pinMode(12, OUTPUT);
+  interrupts();             // enable all interrupts
+
+  // ----------------------------------------------------------------------
+  // TIMER2 for generating 1MHz clock for 6581 on digital pin 11 (OCR2A)
+  // CTC mode with no prescaling.  OC2A toggles on compare match
   //
   // WGM22:0 = 010: CTC Mode, toggle OC
   // WGM2 bits 1 and 0 are in TCCR2A,
@@ -157,28 +157,41 @@ void setup() {
 
   pinMode(arduinoIntPin, INPUT);
 
-  mcp.begin();
-  mcp.setupInterrupts(true, false, LOW);
+  /*
+    mcp.begin();
+    mcp.setupInterrupts(true, false, LOW);
 
 
-  for (int i = 0; i < 16; i++) {
-    mcp.pinMode(i, INPUT);
-    mcp.pullUp(i, HIGH);  // turn on a 100K pullup internally
-    mcp.setupInterruptPin(i, CHANGE);
-  }
+    for (int i = 0; i < 16; i++) {
+      mcp.pinMode(i, INPUT);
+      mcp.pullUp(i, HIGH);  // turn on a 100K pullup internally
+      mcp.setupInterruptPin(i, CHANGE);
+    }
 
-  attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
+    attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
+  */
 
   // Set up iitial SID voices
   sidInit();
- 
-  setADSR(SID_VOICE_1, 0x0, 0xf, 0xf, 0x0); 
+
+  setADSR(SID_VOICE_1, 0x0, 0xf, 0xf, 0x0);
   setFC(0b11111111111);
   poke(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
   poke(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
 
 }
 
+ISR(TIMER1_COMPA_vect)
+
+{
+  digitalWrite(12, digitalRead(12) ^ 1);   // toggle LED pin
+  awakenByInterrupt = true;
+  //noInterrupts();
+  //display.println("IRQ");
+  //display.display();
+  //interrupts();
+
+}
 
 void data_write(byte d) {
   digitalWrite(data_LATCH, LOW);
@@ -240,8 +253,8 @@ void poke(int reg, int value) {
 }
 
 void sidInit() {
-  for (int i=0; i<24; i++) {
-    poke(SID_BASE+i, 0x00);
+  for (int i = 0; i < 24; i++) {
+    poke(SID_BASE + i, 0x00);
   }
 }
 
@@ -256,13 +269,13 @@ void noteOff(int v) {
 }
 
 void setADSR(int v, byte a, byte d, byte s, byte r) {
-  a &= 0b1111; 
+  a &= 0b1111;
   d &= 0b1111;
-  s &= 0b1111; 
+  s &= 0b1111;
   r &= 0b1111;
-     
-  poke(v + SID_AD, (a<<4)|d);
-  poke(v + SID_SR, (r<<4)|r);
+
+  poke(v + SID_AD, (a << 4) | d);
+  poke(v + SID_SR, (r << 4) | r);
 }
 
 int readPot(int i) {
@@ -282,6 +295,8 @@ void setFC(int FC) {
 }
 
 int cutoffFreq = 2 * readPot(0);
+
+int count = 0;
 
 void loop() {
 
@@ -309,7 +324,6 @@ void loop() {
     Serial.println();
   */
 
-
   while (waitForMIDI) {
 
 
@@ -325,6 +339,18 @@ void loop() {
             display.println(cutoffFreq);
             display.display();
       */
+
+  if (awakenByInterrupt) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println(count++);
+    display.display();
+    
+    awakenByInterrupt=false;
+  }
+  
     }
 
 
