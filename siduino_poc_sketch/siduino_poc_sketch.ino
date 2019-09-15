@@ -196,7 +196,7 @@ void setup() {
   noteOff(SID_VOICE_1); //just in case something is wierd
 
   //setADSR(SID_VOICE_1, 0x0, 0x8, 0xa, 0x5);
-  
+
   statusDisplay();
 }
 
@@ -321,7 +321,7 @@ void poke(int reg, int value) {
   address_write(reg);
   data_write(value);
   digitalWrite(G1, HIGH);
-  delay(2);
+  delay(1);
   digitalWrite(G1, LOW);
 }
 
@@ -351,11 +351,17 @@ void sidInit() {
 }
 
 void noteOn(int v, int f) {
-  byte ctrl = sidRegisterRead(v + SID_CTRL);
+  setFreq(v, f);
+  setGate(v);
+}
 
+void setFreq(int v, int f) {
   sidRegisterWrite(v + SID_FREQ_LO, lowByte(f));
   sidRegisterWrite(v + SID_FREQ_HI, highByte(f));
+}
 
+void setGate(int v) {
+  byte ctrl = sidRegisterRead(v + SID_CTRL);
   sidRegisterWrite(v + SID_CTRL, ctrl | 0b00000001);
 }
 
@@ -483,7 +489,7 @@ void handleMIDI() {
     display.display();
   */
 
-  if (commandByte >> 4 == MIDInoteOn >> 4) {
+  if (commandByte >> 4 == MIDInoteOn >> 4) { // NOTE ON
 
     noteByte     = midiBuffer[0];
     velocityByte = midiBuffer[1];
@@ -497,7 +503,7 @@ void handleMIDI() {
     // (re)trigger note
     noteOn(SID_VOICE_1, noteFreq[currentNoteByte]);
 
-  } else if (commandByte >> 4 == MIDInoteOff >> 4) {
+  } else if (commandByte >> 4 == MIDInoteOff >> 4) { // NOTE OFF
 
     noteByte     = midiBuffer[0];
     velocityByte = midiBuffer[1];
@@ -516,8 +522,23 @@ void handleMIDI() {
       noteOff(SID_VOICE_1);
       currentNoteByte = 0;
     }
-  } else {
-    // Some other midi commands
+  } else if ((commandByte >> 4 == MIDIpbc >> 4) && currentNoteByte) { // PITCH BEND (only if a note is playing)
+
+    int pb = ((midiBuffer[1] << 7) | midiBuffer[0]);
+    int currentFreq = noteFreq[currentNoteByte];
+    int wholeTone;
+    float fracTone = ((float)pb - 8192.0) / 8192.0; // [-1, +1]
+
+    if (fracTone > 0) { // bend up
+      wholeTone = noteFreq[currentNoteByte + 2] - currentFreq;
+    } else if (fracTone < 0) { // bend down
+      wholeTone = currentFreq - noteFreq[currentNoteByte - 2]; 
+    }
+
+    setFreq(SID_VOICE_1, round(currentFreq + (float)wholeTone * fracTone));
+
+  } else { // catch all
+
   }
 }
 
@@ -554,7 +575,11 @@ void loop() {
 
       }
 
-    } else { // Paraemter data
+      if (MIDIparamLength == 0) {
+        handleMIDI();
+      }
+
+    } else if (commandByte != MIDIsysex) { // Parameter data, skipping system exclusive
 
       if (midiBufferIndex < 2) { // Only handling 1 and 2 byte data, i.e. no System Exclusive messages
         midiBuffer[midiBufferIndex++] = incomingByte; // Parameter data
@@ -568,12 +593,6 @@ void loop() {
 
     }
 
-
-    // Read the next 3 bytes
-    //    commandByte  = Serial.read();
-    //    noteByte     = Serial.read();
-    //    velocityByte = Serial.read();
-    //    handleNoteEvent();
 
   }
 
