@@ -71,15 +71,6 @@ const int SID_SR      = 0x06;
 // We need these, as the SID write registers are write only
 byte SID_register[25];
 
-// MIDI
-byte commandByte;
-byte noteByte;
-byte velocityByte;
-byte currentNoteByte = 0x00;
-byte oldNoteByte = 0x00; // We will use note zero as a "no note" value
-
-bool waitForMIDI = true;
-
 const int noteFreq[95] = {
   //c     c#      d       d#      e       f       f#      g       g#      a       a#      b
   0x0112, 0x0123, 0x0134, 0x0146, 0x015a, 0x016e, 0x0184, 0x018b, 0x01b3, 0x01cd, 0x01e9, 0x0206,
@@ -204,6 +195,8 @@ void setup() {
 
   noteOff(SID_VOICE_1); //just in case something is wierd
 
+  //setADSR(SID_VOICE_1, 0x0, 0x8, 0xa, 0x5);
+  
   statusDisplay();
 }
 
@@ -325,14 +318,10 @@ void address_write(byte a) {
 */
 void poke(int reg, int value) {
   digitalWrite(G1, LOW);
-  //Serial.println("writing address");
   address_write(reg);
-  //Serial.println("writing data");
   data_write(value);
-  //Serial.println("chip enable");
   digitalWrite(G1, HIGH);
-  delay(1);
-  //Serial.println("chip disable");
+  delay(2);
   digitalWrite(G1, LOW);
 }
 
@@ -362,9 +351,11 @@ void sidInit() {
 }
 
 void noteOn(int v, int f) {
+  byte ctrl = sidRegisterRead(v + SID_CTRL);
+
   sidRegisterWrite(v + SID_FREQ_LO, lowByte(f));
   sidRegisterWrite(v + SID_FREQ_HI, highByte(f));
-  byte ctrl = sidRegisterRead(v + SID_CTRL);
+
   sidRegisterWrite(v + SID_CTRL, ctrl | 0b00000001);
 }
 
@@ -420,45 +411,169 @@ void setVOL(int VOL) {
   sidRegisterWrite(SID_FILTER + 0x03, (r & 0b11110000) | (VOL & 0b1111));
 }
 
-void handleNoteEvent() {
+
+
+// ---------------------------------------------------------------------------------
+// Channel voice messages
+// MIDI commnds are the high nibble. Low nibble is the midi channel number
+#define MIDIcvMask      0b1         // All commands in this category start with this
+#define MIDInoteOff     0b10000000  // Note on
+#define MIDInoteOn      0b10010000  // Note off
+#define MIDIpkp         0b10100000  // Polyphonic key pressure
+#define MIDIcc          0b10110000  // Control change
+#define MIDIpc          0b11000000  // Program change
+#define MIDIcp          0b11010000  // Channel pressure
+#define MIDIpbc         0b11100000  // Pitch bend change
+
+// Channel mode messages
+#define MIDIcmMask      0b1111      // All commands in this category start with this
+#define MIDIsysex       0b11110000  // System exclusive
+#define MIDItcqf        0b11110001  // Time code quarter frame
+#define MIDIspp         0b11110010  // Song position pointer
+#define MIDIss          0b11110011  // Song select
+#define MIDIundef1      0b11110100  // undefined
+#define MIDIundef2      0b11110101  // undefined
+#define MIDItunereq     0b11110110  // Tune request
+#define MIDIsysexEnd    0b11110111  // System exclusive end of transmnission
+
+// System real time messages
+#define MIDIsrtMask     0b11111     // All commands in this category start with this
+#define MIDIclock       0b11111000  // Timing clock sent 24 times per quarter note
+#define MIDIundef3      0b11111001  // undefined
+#define MIDIstart       0b11111010  // Start
+#define MIDIcontinue    0b11111011  // Continue
+#define MIDIstop        0b11111100  // Stop
+#define MIDIundef4      0b11111101  // undefined
+#define MIDIas          0b11111110  // Active sensing
+#define MIDIreset       0b11111111  // Reset
+
+const byte MIDIparamLength[3][8] = {
+  {2, 2, 2, 2, 1, 1, 2, 0},
+  {0, 1, 2, 1, 0, 0, 0, 0},
+  {0, 0, 0, 0, 0, 0, 0, 0}
+};
+
+enum MIDImessageType {MIDIcv, MIDIcm, MIDIsrt};
+
+byte commandByte;
+byte midiBuffer[2];
+int midiBufferIndex = 0;
+
+int midiMessageType = -1; // -1 means invalid
+int midiParamLength = -1;
+int midiChannel     = -1;
+
+byte currentNoteByte = 0x00; // We will use note zero as a "no note" value
+byte oldNoteByte     = 0x00;
+
+
+void handleMIDI() {
+
+  byte noteByte;
+  byte velocityByte;
+
+  /*
     display.clearDisplay();
-    display.setCursor(0,0);
-    display.print("MIDI: ");display.println(commandByte,HEX);
+    display.setCursor(0, 0);
+    display.print("MIDI: ");
+    display.print(commandByte, HEX); display.print(" ");
+    for (int i = 0; i < midiParamLength; i++) {
+      display.print(midiBuffer[i], HEX); display.print(" ");
+    }
     display.display();
-    
-  if (commandByte == 0x90) {
-    oldNoteByte = currentNoteByte; // push old note onto stack
-    currentNoteByte = noteByte; // This is the new note
+  */
+
+  if (commandByte >> 4 == MIDInoteOn >> 4) {
+
+    noteByte     = midiBuffer[0];
+    velocityByte = midiBuffer[1];
+
+    if ((noteByte != currentNoteByte) && (noteByte != oldNoteByte)) {
+      // Only push if the note is note already playing
+      oldNoteByte = currentNoteByte; // push old note onto stack
+      currentNoteByte = noteByte;    // This is the new note
+    }
+
+    // (re)trigger note
     noteOn(SID_VOICE_1, noteFreq[currentNoteByte]);
-  } else if (commandByte = 0x80) {
+
+  } else if (commandByte >> 4 == MIDInoteOff >> 4) {
+
+    noteByte     = midiBuffer[0];
+    velocityByte = midiBuffer[1];
+
     if (noteByte == currentNoteByte) {
       currentNoteByte = oldNoteByte; // pop old note off stack
     }
     if (noteByte = oldNoteByte) { // delete old note from stack
       oldNoteByte = 0x00;
+
     }
+
     if (currentNoteByte) { // There was an old note still playing. Reactivate it.
       noteOn(SID_VOICE_1, noteFreq[currentNoteByte]);
     } else { // There was nothing on the stack, so turn voice off
       noteOff(SID_VOICE_1);
-
+      currentNoteByte = 0;
     }
   } else {
-
+    // Some other midi commands
   }
 }
 
 void loop() {
+
+
   if (periodicInterrupt) {
     //handlePeriodicInterrupt();
   }
 
-  if (Serial.available() > 2) { // At least 3 bytes available
+  if (Serial.available() > 0) {
+    byte incomingByte = Serial.read(); // read next byte
+
+    if (incomingByte >> 7) { // New command received
+
+      commandByte = incomingByte;
+      midiBufferIndex = 0;
+      // Check command category
+      if (commandByte >> 3 == MIDIsrtMask) {        // System real time command
+
+        midiMessageType = MIDIsrt;
+        midiParamLength = MIDIparamLength[midiMessageType][commandByte & 0b111];
+
+      } else if (commandByte >> 4 == MIDIcmMask) {  // Channel mode command
+
+        midiMessageType = MIDIcm;
+        midiParamLength = MIDIparamLength[midiMessageType][commandByte & 0b111];
+
+      } else {                                      // Channel voice command
+
+        midiMessageType = MIDIcv;
+        midiChannel     = commandByte & 0b1111;
+        midiParamLength = MIDIparamLength[midiMessageType][(commandByte >> 4) & 0b111];
+
+      }
+
+    } else { // Paraemter data
+
+      if (midiBufferIndex < 2) { // Only handling 1 and 2 byte data, i.e. no System Exclusive messages
+        midiBuffer[midiBufferIndex++] = incomingByte; // Parameter data
+      }
+
+      // Check if we have a complete message
+      if (midiParamLength == midiBufferIndex) {
+        handleMIDI();
+        midiBufferIndex = 0;
+      }
+
+    }
+
+
     // Read the next 3 bytes
-    commandByte  = Serial.read();
-    noteByte     = Serial.read();
-    velocityByte = Serial.read();
-    handleNoteEvent();
+    //    commandByte  = Serial.read();
+    //    noteByte     = Serial.read();
+    //    velocityByte = Serial.read();
+    //    handleNoteEvent();
 
   }
 
