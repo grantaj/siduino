@@ -3,26 +3,13 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// MCP setup
-Adafruit_MCP23017 mcp;
-
-// OLED Setup
-#define OLED_RESET 4
-Adafruit_SSD1306 display(OLED_RESET);
-
-// Interrupts from the MCP will be handled by this PIN
-//byte arduinoIntPin = 2;
-
-// ... and this interrupt vector
-//byte arduinoInterrupt = 1;
-
-
-//volatile boolean awakenByInterrupt = false; // Pin state change on MCP
-volatile boolean periodicInterrupt = false; // Timer interrupt for periodic polling
-volatile int periodicInterruptCount = 0; // Counts how many interrupts have occured
+// -------------------------------------------------------------------------
+// I/O pin configuration - what is connected where
 
 // Pins connected to 74LS244 chip select decoder
 const int G1  = 13;
+
+// LED pin for debugging status light
 const int LED = 12;
 
 // 74HC595 Shift Register to load address bus
@@ -35,43 +22,65 @@ const int data_DATA  = 7; // ORANGE wire
 const int data_CLK   = 8; // YELLOW
 const int data_LATCH = 9; // RED
 
+// Pin for 1MHz clock to 6581
+const int clkOutputPin = 11;   // Digital pin 11 = MOSI/OC2A/PCINT3 for ATmega328 boards
 
 // Analog bus for reading pots
 const int ANALOG_BUS = A0;
 
-// Data bus
-const int data[8] = {3, 4, 5, 6, 7, 8, 9, 10};
+// -------------------------------------------------------------------------
+// Global variables
 
-unsigned int MCP23017_GPIOAB_data = 0x0000;
+// MCP I/O expander
+Adafruit_MCP23017 mcp;
+uint16_t MCP23017_GPIOAB_data = 0x0000;
 
-// Pin for 1MHz clock to 6581
-const int clkOutputPin = 11;   // Digital pin 11 = MOSI/OC2A/PCINT3) for ATmega328 boards
+// OLED Display
+#define OLED_RESET 4
+Adafruit_SSD1306 display(OLED_RESET);
+
+// Interrupts from the MCP will be handled by this PIN
+//byte arduinoIntPin = 2;
+
+// ... and this interrupt vector
+//byte arduinoInterrupt = 1;
+
+//volatile boolean awakenByInterrupt = false; // Pin state change on MCP
+volatile boolean periodicInterrupt = false; // Timer interrupt for periodic polling
+volatile int periodicInterruptCount = 0; // Counts how many interrupts have occured
+
+
 const int ocr2aval  = 7; // Set to 7 for 1MHz, 3 for 2MHz
 
 // Location of SID in memory map
-const int SID_BASE    = 0x0000;
+
+#define SID_BASE    0x0000
 
 // Offsets to the SID registers
-const int SID_VOICE_1 = 0x00;
-const int SID_VOICE_2 = 0x07;
-const int SID_VOICE_3 = 0x0e;
-const int SID_FILTER  = 0x15;
-const int SID_MISC    = 0x19;
+#define SID_VOICE_1 0x00
+#define SID_VOICE_2 0x07
+#define SID_VOICE_3 0x0e
+#define SID_FILTER  0x15
+#define SID_FC_LO   0x15
+#define SID_FC_HI   0x16
+#define SID_RES_FLT 0x17
+#define SID_MOD_VOL 0x18
+#define SID_MISC    0x19
 
-// The following are per-voice offsets from SID_VOICE_x
-const int SID_FREQ_LO = 0x00;
-const int SID_FREQ_HI = 0x01;
-const int SID_PW_LO   = 0x02;
-const int SID_PW_HI   = 0x03; // Bottom 4 bits only
-const int SID_CTRL    = 0x04;
-const int SID_AD      = 0x05;
-const int SID_SR      = 0x06;
+// Per-voice offsets from SID_VOICE_x
+#define SID_FREQ_LO 0x00
+#define SID_FREQ_HI 0x01
+#define SID_PW_LO   0x02
+#define SID_PW_HI   0x03 // Bottom 4 bits only
+#define SID_CTRL    0x04
+#define SID_AD      0x05
+#define SID_SR      0x06
 
 // In memory copies of the SID registers
 // We need these, as the SID write registers are write only
 byte SID_register[25];
 
-const int noteFreq[95] = {
+const PROGMEM uint16_t noteFreq[95] = {
   //c     c#      d       d#      e       f       f#      g       g#      a       a#      b
   0x0112, 0x0123, 0x0134, 0x0146, 0x015a, 0x016e, 0x0184, 0x018b, 0x01b3, 0x01cd, 0x01e9, 0x0206,
   0x0225, 0x0245, 0x0268, 0x028c, 0x02b3, 0x02dc, 0x0308, 0x0336, 0x0367, 0x039b, 0x03d2, 0x040c,
@@ -98,21 +107,22 @@ void setup() {
 
   // ----------------------------------------------------------------------
   // I/O setup
-  digitalWrite(G1, LOW);
+  digitalWrite(G1, LOW);          // Chip select enable line 
   pinMode(G1, OUTPUT);
-  pinMode(addr_DATA, OUTPUT);
+  pinMode(addr_DATA, OUTPUT);     // Shift register for address bus
   pinMode(addr_CLK, OUTPUT);
   digitalWrite(addr_LATCH, LOW);
   pinMode(addr_LATCH, OUTPUT);
-  pinMode(data_DATA, OUTPUT);
+  pinMode(data_DATA, OUTPUT);     // Shift register for data bus
   pinMode(data_CLK, OUTPUT);
   digitalWrite(data_LATCH, LOW);
   pinMode(data_LATCH, OUTPUT);
+  pinMode(clkOutputPin, OUTPUT);  // Setup clock output pin to drive SID chip
 
   // Start data bus in write mode
-  for (int i = 0; i < 8; i++) {
-    pinMode(data[i], OUTPUT);
-  }
+  // for (int i = 0; i < 8; i++) {
+  //  pinMode(data[i], OUTPUT);
+  // }
 
   // Initialise serial
   Serial.begin(31250);
@@ -121,8 +131,6 @@ void setup() {
     Serial.read();
   }
 
-  // Setup clock output pin to drive SID chip
-  pinMode(clkOutputPin, OUTPUT);
 
   // ----------------------------------------------------------------------
   // TIMER1 for polling analog input surface
