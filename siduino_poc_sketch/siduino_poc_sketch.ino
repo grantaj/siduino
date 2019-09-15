@@ -478,7 +478,7 @@ void handleMIDI() {
   byte noteByte;
   byte velocityByte;
 
-  /*
+/*  
     display.clearDisplay();
     display.setCursor(0, 0);
     display.print("MIDI: ");
@@ -487,7 +487,7 @@ void handleMIDI() {
       display.print(midiBuffer[i], HEX); display.print(" ");
     }
     display.display();
-  */
+*/  
 
   if (commandByte >> 4 == MIDInoteOn >> 4) { // NOTE ON
 
@@ -522,7 +522,8 @@ void handleMIDI() {
       noteOff(SID_VOICE_1);
       currentNoteByte = 0;
     }
-  } else if ((commandByte >> 4 == MIDIpbc >> 4) && currentNoteByte) { // PITCH BEND (only if a note is playing)
+  } else if ((commandByte >> 4 == MIDIpbc >> 4) && (currentNoteByte>1) && (currentNoteByte<93)) { // PITCH BEND
+    // Only do a bend if we are a whole tone inside the range of the noteFreq table
 
     int pb = ((midiBuffer[1] << 7) | midiBuffer[0]);
     int currentFreq = noteFreq[currentNoteByte];
