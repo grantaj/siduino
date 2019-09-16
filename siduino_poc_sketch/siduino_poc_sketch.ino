@@ -52,6 +52,9 @@ volatile int periodicInterruptCount = 0; // Counts how many interrupts have occu
 
 const int ocr2aval  = 7; // Set to 7 for 1MHz, 3 for 2MHz
 
+// ---------------------------------------------------------------------------------
+// SID Implementation
+
 // Location of SID in memory map
 
 #define SID_BASE    0x0000
@@ -92,250 +95,10 @@ const PROGMEM uint16_t noteFreq[95] = {
   0x892b, 0x9153, 0x99f7, 0xa31f, 0xacd2, 0xb719, 0xc1fc, 0xcd85, 0xd98d, 0xe6b0, 0xf467
 };
 
-void setup() {
-  // ----------------------------------------------------------------------
-  // Initialise screen
-  // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // initialize with the I2C addr 0x3D (for the 128x64)
-  display.display();
-  delay(1000);
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.println("Siduino");
-  display.display();
-
-  // ----------------------------------------------------------------------
-  // I/O setup
-  digitalWrite(G1, LOW);          // Chip select enable line 
-  pinMode(G1, OUTPUT);
-  pinMode(addr_DATA, OUTPUT);     // Shift register for address bus
-  pinMode(addr_CLK, OUTPUT);
-  digitalWrite(addr_LATCH, LOW);
-  pinMode(addr_LATCH, OUTPUT);
-  pinMode(data_DATA, OUTPUT);     // Shift register for data bus
-  pinMode(data_CLK, OUTPUT);
-  digitalWrite(data_LATCH, LOW);
-  pinMode(data_LATCH, OUTPUT);
-  pinMode(clkOutputPin, OUTPUT);  // Setup clock output pin to drive SID chip
-
-  // Start data bus in write mode
-  // for (int i = 0; i < 8; i++) {
-  //  pinMode(data[i], OUTPUT);
-  // }
-
-  // Initialise serial
-  Serial.begin(31250);
-  // Flush MIDI
-  while (Serial.available()) {
-    Serial.read();
-  }
-
-
-  // ----------------------------------------------------------------------
-  // TIMER1 for polling analog input surface
-
-  noInterrupts();           // disable all interrupts
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCNT1  = 0;
-  OCR1A  = 1250;            // compare match register 1 sec = 16MHz/256 = 62,500 Hz
-  TCCR1B |= (1 << WGM12);   // CTC mode
-  TCCR1B |= (1 << CS12);    // 256 prescaler
-  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
-  pinMode(12, OUTPUT);
-  interrupts();             // enable all interrupts
-
-  // ----------------------------------------------------------------------
-  // TIMER2 for generating 1MHz clock for 6581 on digital pin 11 (OCR2A)
-  // CTC mode with no prescaling.  OC2A toggles on compare match
-  //
-  // WGM22:0 = 010: CTC Mode, toggle OC
-  // WGM2 bits 1 and 0 are in TCCR2A,
-  // WGM2 bit 2 is in TCCR2B
-  // COM2A0 sets OC2A (arduino pin 11 on Uno or Duemilanove) to toggle on compare match
-  //
-  TCCR2A = ((1 << WGM21) | (1 << COM2A0));
-
-  // Set Timer 2  No prescaling  (i.e. prescale division = 1)
-  //
-  // CS22:0 = 001: Use CPU clock with no prescaling
-  // CS2 bits 2:0 are all in TCCR2B
-  TCCR2B = (1 << CS20);
-
-  // Make sure Compare-match register A interrupt for timer2 is disabled
-  TIMSK2 = 0;
-  // This value determines the output frequency
-  OCR2A = ocr2aval;
-
-
-  // ----------------------------------------------------------------------
-  // MCP23017 setup
-  // This will be used to control the SID_CTRL registers
-  //pinMode(arduinoIntPin, INPUT);
-
-  mcp.begin();
-  //mcp.setupInterrupts(true, false, LOW);
-
-  for (int i = 0; i < 16; i++) {
-    mcp.pinMode(i, INPUT);
-    mcp.pullUp(i, HIGH);  // turn on a 100K pullup internally
-    //mcp.setupInterruptPin(i, CHANGE);
-  }
-
-  //MCP23017_GPIOAB_data = mcp.readGPIOAB();
-
-  //attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
-
-  // ----------------------------------------------------------------------
-  // Set up iitial SID voices
-  sidInit();
-
-  //sidRegisterWrite(SID_VOICE_1 + SID_CTRL, 0b01000000); // Initialise to PW
-  updateCtrlParams();
-
-  // These should be switched
-  sidRegisterWrite(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
-  sidRegisterWrite(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
-
-  updateFilterParams();
-  updateVoiceParams();
-
-  noteOff(SID_VOICE_1); //just in case something is wierd
-
-  //setADSR(SID_VOICE_1, 0x0, 0x8, 0xa, 0x5);
-
-  statusDisplay();
-}
-
-ISR(TIMER1_COMPA_vect) {
-  //digitalWrite(LED, digitalRead(LED) ^ 1);   // toggle LED pin
-  periodicInterrupt = true;
-}
-
-void handlePeriodicInterrupt() {
-
-  periodicInterruptCount++;
-  // Fast updates
-  updateFilterParams();
-
-  // Slower updates
-  // probably not altering these so much in real time
-  if (!(periodicInterruptCount % 20)) {
-    updateVoiceParams();
-    updateCtrlParams();
-  }
-
-  periodicInterrupt = false;
-}
-
-void updateFilterParams()
-{
-  // ADC is 10 bits
-  setFC(readPot(0) << 1);  // Cutoff frequency is 11 bits
-  setRES(readPot(1) >> 6); // Resonance is 4 bits
-  setVOL(readPot(2) >> 6); // Volume is 4 bits
-}
-
-void updateVoiceParams() {
-  // No voice parameter for now, as we are working only with voice 1
-  // Each ADSR parameter is 4 bits
-  setADSR(SID_VOICE_1, readPot(4) >> 6, readPot(5) >> 6, readPot(6) >> 6, readPot(7) >> 6);
-  // PW is 12 bits
-  setPW(SID_VOICE_1, readPot(3) << 2);
-}
-
-void updateCtrlParams() {
-  // Don't mess with GATE
-  int c = mcp.readGPIOAB();
-  byte gate = sidRegisterRead(SID_VOICE_1 + SID_CTRL) & 1;
-  setCTRL(SID_VOICE_1, (c & 0b11111110) | gate);
-}
-
-
-void statusDisplay() {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-
-  // Display cutoff freq as one binary string high byte and low 3 bits
-  //display.print(sidRegisterRead(SID_FILTER + 0x01), BIN); display.println(sidRegisterRead(SID_FILTER + 0x00), BIN);
-
-  //display.println(sidRegisterRead(SID_FILTER + 0x02), BIN);
-  //display.println(sidRegisterRead(SID_FILTER + 0x03), BIN);
-
-  display.println(sidRegisterRead(SID_VOICE_1 + SID_AD), HEX);
-  display.println(sidRegisterRead(SID_VOICE_1 + SID_SR), HEX);
-  display.println(sidRegisterRead(SID_VOICE_1 + SID_CTRL), BIN);
-  display.display();
-}
-
-void data_write(byte d) {
-  digitalWrite(data_LATCH, LOW);
-  shiftOut(data_DATA, data_CLK, MSBFIRST, d);
-  digitalWrite(data_LATCH, HIGH);
-}
-
-/*
-   Write an address onto the address bus
-   This is done by shifting it out usign a shift register
-*/
-void address_write(byte a) {
-  digitalWrite(addr_LATCH, LOW);
-  shiftOut(addr_DATA, addr_CLK, MSBFIRST, a);
-  digitalWrite(addr_LATCH, HIGH);
-}
-
-
-/*
-  // The int handler will just signal that the int has happen
-  // we will do the work from the main loop.
-  void intCallBack() {
-  awakenByInterrupt = true;
-  }
-
-
-  void handleInterrupt() {
-
-  // Get more information from the MCP from the INT
-  //uint8_t pin = mcp.getLastInterruptPin();
-  //uint8_t val = mcp.getLastInterruptPinValue();
-
-  //Serial.print("The change was ");
-  //Serial.print("Pin: "); Serial.print(pin, HEX); Serial.println();
-  //Serial.print("Val: "); Serial.print(val, HEX); Serial.println();
-
-  //irqcount++;
-  MCP23017_GPIOAB_data = mcp.readGPIOAB();
-  //updateCtrlParams();
-
-  //statusDisplay();
-
-  //cleanInterrupts();
-  }
-
-  // handy for interrupts triggered by buttons
-  // normally signal a few due to bouncing issues
-  void cleanInterrupts() {
-  EIFR = 0x01;
-  awakenByInterrupt = false;
-  }
-*/
-/*
-   Generic poke function to write value on to the data bus
-   and reg obnto the address bus.
-*/
-void poke(int reg, int value) {
-  digitalWrite(G1, LOW);
-  address_write(reg);
-  data_write(value);
-  digitalWrite(G1, HIGH);
-  delay(1);
-  digitalWrite(G1, LOW);
-}
 
 // SID chip functions -------------------------------
 
-// Use sidWriteRegister and sidReadRegister to access
+// Use sidRegisterWrite and sidRegisterRead to access
 // SID chip registers. This keeps local copy of the
 // registers up to date. Direct poking will cause the
 // local copy to get out of date so don't do it.
@@ -399,33 +162,38 @@ void setPW(int v, int pw) {
   sidRegisterWrite(v + SID_PW_HI, (pw >> 8) & 0xf);
 }
 
-int readPot(int i) {
-  byte base = 0x40; // 0b0100 0000
-  address_write(base + i);
-  digitalWrite(G1, HIGH);
-  int pot = analogRead(A0);
-  delayMicroseconds(10);
-  digitalWrite(G1, LOW);
-  return pot;
+
+// ---------------------------------------------------------------------------------
+// Control surface functions and connection to SID registers
+
+
+
+void updateFilterParams()
+{
+  // ADC is 10 bits
+  setFC(readPot(0) << 1);  // Cutoff frequency is 11 bits
+  setRES(readPot(1) >> 6); // Resonance is 4 bits
+  setVOL(readPot(2) >> 6); // Volume is 4 bits
 }
 
-void setFC(int FC) {
-  sidRegisterWrite(SID_FILTER + 0x00, FC & 0b111);
-  sidRegisterWrite(SID_FILTER + 0x01, FC >> 3);
+void updateVoiceParams() {
+  // No voice parameter for now, as we are working only with voice 1
+  // Each ADSR parameter is 4 bits
+  setADSR(SID_VOICE_1, readPot(4) >> 6, readPot(5) >> 6, readPot(6) >> 6, readPot(7) >> 6);
+  // PW is 12 bits
+  setPW(SID_VOICE_1, readPot(3) << 2);
 }
 
-void setRES(int RES) {
-  RES = RES & 0b1111;
-  byte r = sidRegisterRead(SID_FILTER + 0x02);
-  sidRegisterWrite(SID_FILTER + 0x02, (RES << 4) | (r & 0b1111));
-}
-
-void setVOL(int VOL) {
-  byte r = sidRegisterRead(SID_FILTER + 0x03);
-  sidRegisterWrite(SID_FILTER + 0x03, (r & 0b11110000) | (VOL & 0b1111));
+void updateCtrlParams() {
+  // Don't mess with GATE
+  int c = mcp.readGPIOAB();
+  byte gate = sidRegisterRead(SID_VOICE_1 + SID_CTRL) & 1;
+  setCTRL(SID_VOICE_1, (c & 0b11111110) | gate);
 }
 
 
+// ---------------------------------------------------------------------------------
+// MIDI Implementation
 
 // ---------------------------------------------------------------------------------
 // Channel voice messages
@@ -549,6 +317,256 @@ void handleMIDI() {
   } else { // catch all
 
   }
+}
+
+
+
+void setup() {
+  // ----------------------------------------------------------------------
+  // Initialise screen
+  // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // initialize with the I2C addr 0x3D (for the 128x64)
+  display.display();
+  delay(250);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.println("Siduino");
+  display.display();
+
+  // ----------------------------------------------------------------------
+  // I/O setup
+  digitalWrite(G1, LOW);          // Chip select enable line 
+  pinMode(G1, OUTPUT);
+  pinMode(addr_DATA, OUTPUT);     // Shift register for address bus
+  pinMode(addr_CLK, OUTPUT);
+  digitalWrite(addr_LATCH, LOW);
+  pinMode(addr_LATCH, OUTPUT);
+  pinMode(data_DATA, OUTPUT);     // Shift register for data bus
+  pinMode(data_CLK, OUTPUT);
+  digitalWrite(data_LATCH, LOW);
+  pinMode(data_LATCH, OUTPUT);
+  pinMode(LED, OUTPUT);
+  pinMode(clkOutputPin, OUTPUT);  // Setup clock output pin to drive SID chip
+
+  // Start data bus in write mode
+  // for (int i = 0; i < 8; i++) {
+  //  pinMode(data[i], OUTPUT);
+  // }
+
+  // Initialise serial
+  Serial.begin(31250);
+  // Flush MIDI
+  while (Serial.available()) {
+    Serial.read();
+  }
+
+
+  // ----------------------------------------------------------------------
+  // TIMER1 for polling analog input surface
+  const int pollingFrequencyHz = 50;
+  
+  noInterrupts();                     // disable all interrupts
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1  = 0;
+  OCR1A  = 62500/pollingFrequencyHz;  // compare match register 1 sec = 16MHz/256 = 62,500 Hz
+  TCCR1B |= (1 << WGM12);             // CTC mode
+  TCCR1B |= (1 << CS12);              // 256 prescaler
+  TIMSK1 |= (1 << OCIE1A);            // enable timer compare interrupt
+  interrupts();                       // enable all interrupts
+
+  // ----------------------------------------------------------------------
+  // TIMER2 for generating 1MHz clock for 6581 on digital pin 11 (OCR2A)
+  // CTC mode with no prescaling.  OC2A toggles on compare match
+  //
+  // WGM22:0 = 010: CTC Mode, toggle OC
+  // WGM2 bits 1 and 0 are in TCCR2A,
+  // WGM2 bit 2 is in TCCR2B
+  // COM2A0 sets OC2A (arduino pin 11 on Uno or Duemilanove) to toggle on compare match
+  //
+  TCCR2A = ((1 << WGM21) | (1 << COM2A0));
+
+  // Set Timer 2  No prescaling  (i.e. prescale division = 1)
+  //
+  // CS22:0 = 001: Use CPU clock with no prescaling
+  // CS2 bits 2:0 are all in TCCR2B
+  TCCR2B = (1 << CS20);
+
+  // Make sure Compare-match register A interrupt for timer2 is disabled
+  TIMSK2 = 0;
+  // This value determines the output frequency
+  OCR2A = ocr2aval;
+
+
+  // ----------------------------------------------------------------------
+  // MCP23017 setup
+  // This will be used to control the SID_CTRL registers
+  //pinMode(arduinoIntPin, INPUT);
+
+  mcp.begin();
+  //mcp.setupInterrupts(true, false, LOW);
+
+  for (int i = 0; i < 16; i++) {
+    mcp.pinMode(i, INPUT);
+    mcp.pullUp(i, HIGH);  // turn on a 100K pullup internally
+    //mcp.setupInterruptPin(i, CHANGE);
+  }
+
+  //MCP23017_GPIOAB_data = mcp.readGPIOAB();
+
+  //attachInterrupt(digitalPinToInterrupt(arduinoIntPin), intCallBack, FALLING);
+
+  // ----------------------------------------------------------------------
+  // Set up iitial SID voices
+  sidInit();
+
+  //sidRegisterWrite(SID_VOICE_1 + SID_CTRL, 0b01000000); // Initialise to PW
+  updateCtrlParams();
+
+  // These should be switched
+  sidRegisterWrite(SID_FILTER + 0x02, 0b00000001); // RES | EXT V3 V2 V1
+  sidRegisterWrite(SID_FILTER + 0x03, 0b00011111); // 3OFF HP BP LP | Volume
+
+  updateFilterParams();
+  updateVoiceParams();
+
+  noteOff(SID_VOICE_1); //just in case something is wierd
+
+  //setADSR(SID_VOICE_1, 0x0, 0x8, 0xa, 0x5);
+
+  statusDisplay();
+}
+
+ISR(TIMER1_COMPA_vect) {
+  //digitalWrite(LED, digitalRead(LED) ^ 1);   // toggle LED pin
+  periodicInterrupt = true;
+}
+
+void handlePeriodicInterrupt() {
+
+  periodicInterruptCount++;
+  // Fast updates
+  updateFilterParams();
+
+  // Slower updates
+  // probably not altering these so much in real time
+  if (!(periodicInterruptCount % 20)) {
+    updateVoiceParams();
+    updateCtrlParams();
+  }
+
+  periodicInterrupt = false;
+}
+
+
+
+
+void statusDisplay() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  // Display cutoff freq as one binary string high byte and low 3 bits
+  //display.print(sidRegisterRead(SID_FILTER + 0x01), BIN); display.println(sidRegisterRead(SID_FILTER + 0x00), BIN);
+
+  //display.println(sidRegisterRead(SID_FILTER + 0x02), BIN);
+  //display.println(sidRegisterRead(SID_FILTER + 0x03), BIN);
+
+  display.println(sidRegisterRead(SID_VOICE_1 + SID_AD), HEX);
+  display.println(sidRegisterRead(SID_VOICE_1 + SID_SR), HEX);
+  display.println(sidRegisterRead(SID_VOICE_1 + SID_CTRL), BIN);
+  display.display();
+}
+
+void data_write(byte d) {
+  digitalWrite(data_LATCH, LOW);
+  shiftOut(data_DATA, data_CLK, MSBFIRST, d);
+  digitalWrite(data_LATCH, HIGH);
+}
+
+/*
+   Write an address onto the address bus
+   This is done by shifting it out usign a shift register
+*/
+void address_write(byte a) {
+  digitalWrite(addr_LATCH, LOW);
+  shiftOut(addr_DATA, addr_CLK, MSBFIRST, a);
+  digitalWrite(addr_LATCH, HIGH);
+}
+
+
+/*
+  // The int handler will just signal that the int has happen
+  // we will do the work from the main loop.
+  void intCallBack() {
+  awakenByInterrupt = true;
+  }
+
+
+  void handleInterrupt() {
+
+  // Get more information from the MCP from the INT
+  //uint8_t pin = mcp.getLastInterruptPin();
+  //uint8_t val = mcp.getLastInterruptPinValue();
+
+  //Serial.print("The change was ");
+  //Serial.print("Pin: "); Serial.print(pin, HEX); Serial.println();
+  //Serial.print("Val: "); Serial.print(val, HEX); Serial.println();
+
+  //irqcount++;
+  MCP23017_GPIOAB_data = mcp.readGPIOAB();
+  //updateCtrlParams();
+
+  //statusDisplay();
+
+  //cleanInterrupts();
+  }
+
+  // handy for interrupts triggered by buttons
+  // normally signal a few due to bouncing issues
+  void cleanInterrupts() {
+  EIFR = 0x01;
+  awakenByInterrupt = false;
+  }
+*/
+/*
+   Generic poke function to write value on to the data bus
+   and reg obnto the address bus.
+*/
+void poke(int reg, int value) {
+  digitalWrite(G1, LOW);
+  address_write(reg);
+  data_write(value);
+  digitalWrite(G1, HIGH);
+  delay(1);
+  digitalWrite(G1, LOW);
+}
+
+
+int readPot(int i) {
+  byte base = 0x40; // 0b0100 0000
+  address_write(base + i);
+  digitalWrite(G1, HIGH);
+  int pot = analogRead(A0);
+  delayMicroseconds(10);
+  digitalWrite(G1, LOW);
+  return pot;
+}
+
+void setFC(int FC) {
+  sidRegisterWrite(SID_FILTER + 0x00, FC & 0b111);
+  sidRegisterWrite(SID_FILTER + 0x01, FC >> 3);
+}
+
+void setRES(int RES) {
+  RES = RES & 0b1111;
+  byte r = sidRegisterRead(SID_FILTER + 0x02);
+  sidRegisterWrite(SID_FILTER + 0x02, (RES << 4) | (r & 0b1111));
+}
+
+void setVOL(int VOL) {
+  byte r = sidRegisterRead(SID_FILTER + 0x03);
+  sidRegisterWrite(SID_FILTER + 0x03, (r & 0b11110000) | (VOL & 0b1111));
 }
 
 void loop() {
